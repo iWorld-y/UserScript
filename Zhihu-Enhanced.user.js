@@ -3,7 +3,7 @@
 // @name:zh-CN   知乎增强
 // @name:zh-TW   知乎增強
 // @name:ru      Улучшение Zhihu
-// @version      2.3.29
+// @version      2.3.36
 // @author       X.I.U
 // @description  A more personalized Zhihu experience~
 // @description:zh-CN  移除登录弹窗、屏蔽指定类别（视频、盐选、文章、想法、关注[赞同/关注了XX]等）、屏蔽低赞/低评、屏蔽用户、屏蔽关键词、默认收起回答、快捷收起回答/评论（左键两侧）、快捷回到顶部（右键两侧）、区分问题文章、移除高亮链接、净化搜索热门、净化标题消息、展开问题描述、显示问题作者、默认高清原图（无水印）、置顶显示时间、完整问题时间、直达问题按钮、默认站外直链...
@@ -20,6 +20,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_notification
+// @grant        GM_setClipboard
 // @grant        GM_info
 // @grant        window.onurlchange
 // @sandbox      JavaScript
@@ -1641,6 +1642,108 @@ function blockHotOther() {
     block();
 }
 
+// 复制当前问题标题和当前点击的回答正文
+function copyQuestionAnswer() {
+    addCopyQuestionAnswerClickListener();
+    addCopyQuestionAnswerButtons(document);
+    const observer = new MutationObserver(function(mutationsList) {
+        for (const mutation of mutationsList) {
+            for (const target of mutation.addedNodes) {
+                if (target.nodeType != 1) continue
+                addCopyQuestionAnswerButtons(target);
+            }
+        }
+    });
+    observer.observe(document, { childList: true, subtree: true });
+}
+
+// 捕获复制按钮点击，避免知乎页面事件覆盖按钮自身事件
+function addCopyQuestionAnswerClickListener() {
+    if (window.copyQuestionAnswerClickListener) return
+    window.copyQuestionAnswerClickListener = true;
+    document.addEventListener('click', function(event) {
+        const button = event.target.closest && event.target.closest('.zhihuE-copyQuestionAnswer');
+        if (!button) return
+        event.preventDefault();
+        event.stopPropagation();
+        copyQuestionAnswerToClipboard(button);
+    }, true);
+}
+
+// 获取知乎问题标题
+function getCopyQuestionTitle() {
+    const item = document.querySelector('.QuestionHeader-title, h1.QuestionHeader-title, [itemprop="name"]');
+    if (!item) return ''
+    return (item.textContent || '').trim()
+}
+
+// 从按钮定位到当前回答容器
+function getCopyAnswerContainer(button) {
+    if (!button) return null
+    return button.closest('.Card.AnswerCard, .List-item, .ContentItem.AnswerItem')
+}
+
+// 获取当前回答正文
+function getCopyAnswerText(answerContainer) {
+    if (!answerContainer) return ''
+    const item = answerContainer.querySelector('.RichContent .RichText, .RichContent .ztext, .RichText.ztext');
+    if (!item) return ''
+    return (item.innerText || item.textContent || '').trim()
+}
+
+// 组合复制到剪贴板的固定文本
+function buildCopyQuestionAnswerText(questionTitle, answerText) {
+    return `问题：\n${questionTitle}\n\n回答：\n${answerText}`
+}
+
+// 复制当前按钮所在回答
+function copyQuestionAnswerToClipboard(button) {
+    const questionTitle = getCopyQuestionTitle();
+    if (!questionTitle) {
+        GM_notification({text: '找不到问题标题', timeout: 2000});
+        return false
+    }
+    const answerContainer = getCopyAnswerContainer(button);
+    if (!answerContainer) {
+        GM_notification({text: '找不到回答', timeout: 2000});
+        return false
+    }
+    const answerText = getCopyAnswerText(answerContainer);
+    if (!answerText) {
+        GM_notification({text: '找不到回答正文', timeout: 2000});
+        return false
+    }
+    const copyText = buildCopyQuestionAnswerText(questionTitle, answerText);
+    try {
+        GM_setClipboard(copyText, 'text');
+    } catch (e) {
+        GM_notification({text: '复制失败', timeout: 3000});
+        return false
+    }
+    GM_notification({text: '已复制', timeout: 2000});
+    return true
+}
+
+// 给回答时间行添加复制按钮
+function addCopyQuestionAnswerButtons(root) {
+    const answers = [];
+    if (root.matches && root.matches('.Card.AnswerCard, .List-item, .ContentItem.AnswerItem')) answers.push(root);
+    const closestAnswer = root.closest && root.closest('.Card.AnswerCard, .List-item, .ContentItem.AnswerItem');
+    if (closestAnswer && answers.indexOf(closestAnswer) === -1) answers.push(closestAnswer);
+    root.querySelectorAll('.Card.AnswerCard, .List-item, .ContentItem.AnswerItem').forEach(function(item){
+        if (answers.indexOf(item) === -1) answers.push(item);
+    })
+    answers.forEach(function(answer){
+        const answerItem = answer.querySelector('.ContentItem.AnswerItem') || answer;
+        if (!answerItem.classList.contains('AnswerItem')) return
+        const time = answerItem.querySelector('.ContentItem-meta > .ContentItem-time') || answerItem.querySelector('.ContentItem-time');
+        if (!time) return
+        if (time.querySelector('.zhihuE-copyQuestionAnswer')) return
+        time.dataset.copyQuestionAnswerButton = 'true';
+        time.insertAdjacentHTML('beforeend', '<button type="button" class="Button ContentItem-action Button--plain zhihuE-copyQuestionAnswer" style="margin-left: 8px;">复制问题和回答</button>');
+    })
+}
+
 // 将关注/推荐/热榜/专栏的选项去掉默认的点击事件改成静态链接（针对首页互相切换（知乎这里切换是动态加载的），为了避免功能交叉混乱
 // 针对所有页面
 function switchHome() {
@@ -1693,6 +1796,7 @@ function switchHomeRecommend() {
                 blockYanXuan(); //                                             屏蔽盐选内容
                 blockType('question'); //                                      屏蔽指定类别（视频/文章等）
                 defaultCollapsedAnswer(); //                                   默认收起回答
+                copyQuestionAnswer(); //                                       复制问题和当前回答
             }
             setInterval(function(){topTime_('.ContentItem.AnswerItem', 'ContentItem-meta')}, 300); // 置顶显示时间
             setTimeout(function(){question_time(); question_author()}, 100); //问题创建时间 + 显示问题作者
